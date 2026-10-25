@@ -99,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("login", help="登录（账号密码或扫码），自动处理二次认证")
     p.add_argument("-u", "--username", help="学号/工号")
-    p.add_argument("--qr", action="store_true", help="用学校 App 扫码登录")
+    p.add_argument("--qr", action="store_true", help="用微信或企业微信扫码登录（手机上需已登录统一身份认证）")
     p.add_argument("--service", help="登录后要进入的服务地址")
     p.add_argument("--totp-secret-env", metavar="VAR", help="从环境变量读取安全令牌 OTP 的密钥，自动完成二次认证")
     p.add_argument("--no-trust", action="store_true", help="不勾选“信任此设备”")

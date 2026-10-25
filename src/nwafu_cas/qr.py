@@ -2,7 +2,9 @@
 
 Four variants share one interface (:class:`QrChallenge`):
 
-* ``school``  首页“扫码登录”：scanned in the university app.
+* ``school``  首页“扫码登录”：the code holds an authserver URL
+              (``/qrCode/qrCodeLogin.do?uuid=``); scanned with 微信/企业微信,
+              it is confirmed on a phone that is logged in to 统一身份认证.
 * ``mfa``     二次认证“钉钉/企业微信/WeLink 扫码”(type 14).
 * ``face``    二次认证“实人认证”：scan in 支付宝/微信, then a face check.
 * ``wechat``  二次认证“微信扫码”：WeChat's own web login (open.weixin.qq.com),
@@ -93,7 +95,7 @@ def school_qr(cas: CasClient, login_url: str, form: dict[str, str]) -> QrChallen
         sep = "&" if "?" in login_url else "?"
         return cas._submit_login(login_url + sep + "display=qrLogin", data)
 
-    return QrChallenge("school", img, "用学校 App 扫码并确认登录", uuid=uuid, _poll=poll, _finish=finish)
+    return QrChallenge("school", img, "用微信或企业微信扫码，并在手机上确认登录（手机上需已登录统一身份认证）", uuid=uuid, _poll=poll, _finish=finish)
 
 
 # ---------------------------------------------------------------- 钉钉/企业微信/WeLink (type 14)

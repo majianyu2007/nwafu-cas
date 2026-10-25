@@ -2,12 +2,13 @@
 
 [![CI](https://github.com/majianyu2007/nwafu-cas/actions/workflows/ci.yml/badge.svg)](https://github.com/majianyu2007/nwafu-cas/actions/workflows/ci.yml)
 [![Site watch](https://github.com/majianyu2007/nwafu-cas/actions/workflows/site-watch.yml/badge.svg)](https://github.com/majianyu2007/nwafu-cas/actions/workflows/site-watch.yml)
+[![PyPI](https://img.shields.io/pypi/v/nwafu-cas)](https://pypi.org/project/nwafu-cas/)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 西北农林科技大学统一身份认证（[authserver.nwafu.edu.cn](https://authserver.nwafu.edu.cn)）的 Python 客户端与命令行。用于给自己的脚本、工具接入学校的单点登录：
 
-- **首页登录方式**：账号密码、学校 App 扫码、FIDO 通行密钥（软件凭据）。
+- **首页登录方式**：账号密码、扫码登录（微信或企业微信扫码，在已登录统一身份认证的手机上确认）、FIDO 通行密钥（软件凭据）。
 - **二次认证**：学校页面提供的方式都能完成：
   - 短信、企业微信、今日校园、邮箱、钉钉、WeLink、公众号验证码；
   - 安全令牌 OTP（可用密钥自动生成）；
@@ -23,9 +24,10 @@
 ## 安装
 
 ```bash
-pip install "nwafu-cas @ git+https://github.com/majianyu2007/nwafu-cas"
+pip install nwafu-cas
 # 可选：FIDO 通行密钥登录 / 终端里直接显示二维码
-pip install "nwafu-cas[fido2,qr] @ git+https://github.com/majianyu2007/nwafu-cas"
+pip install "nwafu-cas[fido2,qr]"
+# 校园网内访问 PyPI 慢时可用镜像，例如：pip install -i https://pypi.tuna.tsinghua.edu.cn/simple nwafu-cas
 ```
 
 需要 Python 3.10+。依赖只有 httpx、pycryptodome、pyotp。
@@ -34,7 +36,7 @@ pip install "nwafu-cas[fido2,qr] @ git+https://github.com/majianyu2007/nwafu-cas
 
 ```bash
 nwafu-cas login -u 2025xxxxxx     # 输入密码；需要二次认证时列出可用方式让你选
-nwafu-cas login --qr              # 用学校 App 扫码登录
+nwafu-cas login --qr              # 用微信或企业微信扫码登录
 nwafu-cas status                  # 会话是否还有效
 nwafu-cas open https://ehall.nwafu.edu.cn/new/index.html
 nwafu-cas doctor                  # 检查学校页面是否改版（不需要登录）

@@ -265,7 +265,7 @@ class CasClient:
         return self._guarded(lambda: self._submit_login(p.url, data))
 
     def login_qr(self, *, service: str | None = DEFAULT_SERVICE, login_url: str | None = None) -> _qr.QrChallenge | LoginResult:
-        """扫码登录 with the university app; ``wait()`` returns a :class:`LoginResult`."""
+        """扫码登录: scanned with 微信/企业微信 on a phone already logged in; ``wait()`` returns a :class:`LoginResult`."""
         p = self.login_page(service, login_url)
         if isinstance(p, LoginResult):
             return p

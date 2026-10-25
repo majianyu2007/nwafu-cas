@@ -86,7 +86,7 @@ def login(cas: CasClient, username: str, password: str, ui: Ui, *, service: str 
 
 
 def login_qr(cas: CasClient, ui: Ui, *, service: str | None = None, qr_timeout: float = 180, **kw) -> httpx.Response:
-    """扫码登录 (university app) plus any second factor."""
+    """扫码登录 (微信/企业微信) plus any second factor."""
     from .constants import DEFAULT_SERVICE
 
     q = cas.login_qr(service=service or DEFAULT_SERVICE)

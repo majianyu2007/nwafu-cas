@@ -2,6 +2,14 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.0.1] — 2026-10-25
+
+### 修正
+- 扫码登录的说明：二维码用微信或企业微信扫，在已登录统一身份认证的手机上确认（不是“学校 App”）。
+
+### 新增
+- 发布到 PyPI（GitHub Actions 可信发布）。
+
 ## [1.0.0] — 2026-10-25
 
 更名为 **nwafu-cas**（原 `wisedu_cas`），专为西北农林科技大学统一身份认证设计。与 0.x 不兼容。
@@ -12,7 +20,7 @@
   - 安全令牌 OTP（按新接口以 `otpCode` 提交）、认证密码；
   - 扫码类：微信扫码、钉钉/企微/WeLink 扫码、实人认证（支付宝/微信刷脸）；
   - 支持“信任此设备”。
-- 首页扫码登录（学校 App）；FIDO 登录改用页面返回的 `sessionToken`。
+- 首页扫码登录（微信/企业微信扫码）；FIDO 登录改用页面返回的 `sessionToken`。
 - 分步 API：`LoginResult` / `MfaChallenge` / `QrChallenge`；`nwafu_cas.interactive` 提供完整对话流程。
 - `CasClient.get(url)`：任意校内地址的多跳跳转（含 Vouch/OIDC），未登录时给出 `login_url`。
 - 页面自适应：
