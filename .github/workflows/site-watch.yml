@@ -1,0 +1,44 @@
+name: Site watch
+
+# Weekly check that authserver.nwafu.edu.cn still matches this library.
+# Public pages only; no account or secret is used.
+on:
+  schedule:
+    - cron: "17 1 * * 1"   # Mondays 09:17 Beijing time
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  doctor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - id: doctor
+        shell: bash
+        run: |
+          set +e
+          nwafu-cas doctor > report.txt; code=$?
+          cat report.txt
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Unreachable from GitHub runners
+        if: steps.doctor.outputs.code == '2'
+        run: echo "::warning::authserver.nwafu.edu.cn was not reachable from the runner; nothing checked."
+      - name: Open an issue when the site changed
+        if: steps.doctor.outputs.code == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="学校统一身份认证页面有变化（site watch）"
+          if ! gh issue list --state open --search "$title in:title" --json number --jq '.[0].number' | grep -q .; then
+            { echo '`nwafu-cas doctor` 发现页面与本版本不一致：'; echo; echo '```'; cat report.txt; echo '```'; } > body.md
+            gh issue create --title "$title" --body-file body.md
+          fi
+          exit 1

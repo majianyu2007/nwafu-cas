@@ -1,9 +1,35 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [1.0.0] — 2026-10-25
+
+更名为 **nwafu-cas**（原 `wisedu_cas`），专为西北农林科技大学统一身份认证设计。与 0.x 不兼容。
+
+### 新增
+- 二次认证覆盖学校页面提供的全部方式：
+  - 验证码类：短信、企业微信、今日校园、邮箱、钉钉、WeLink、公众号；
+  - 安全令牌 OTP（按新接口以 `otpCode` 提交）、认证密码；
+  - 扫码类：微信扫码、钉钉/企微/WeLink 扫码、实人认证（支付宝/微信刷脸）；
+  - 支持“信任此设备”。
+- 首页扫码登录（学校 App）；FIDO 登录改用页面返回的 `sessionToken`。
+- 分步 API：`LoginResult` / `MfaChallenge` / `QrChallenge`；`nwafu_cas.interactive` 提供完整对话流程。
+- `CasClient.get(url)`：任意校内地址的多跳跳转（含 Vouch/OIDC），未登录时给出 `login_url`。
+- 页面自适应：
+  - 表单字段从页面读取；
+  - 加密参数从 `encrypt.js` 读取；
+  - 验证码类型从 `reAuth.js` 读取。
+- `nwafu-cas doctor` 页面核对，以及每周自动巡检工作流（发现变化自动开 issue）。
+- 命令行 `nwafu-cas`：`login`、`status`、`open`、`doctor`、`logout`。
+- `LoginGuard`：最小间隔、每小时上限、失败退避、锁定/验证码后暂停，状态可持久化。
+
+### 变更
+- 同步 API（httpx.Client）取代 0.x 的 async `AuthClient`；异步程序可用 `asyncio.to_thread` 调用。
+- 不再硬编码 Vouch Proxy 回调路径，改为通用的跳转跟随。
+- 包改为 src 布局，构建后端改为 hatchling。
+
+### 移除
+- `AuthClient`、`AuthSession`、`AuthState` 状态机和旧的 `retry` 模块（由 `LoginGuard` 取代）。
 
 ## [0.2.1] — 2026-05-13
 

@@ -11,3 +11,9 @@ build/
 .coverage
 htmlcov/
 .DS_Store
+.venv/
+.ruff_cache/
+state.json
+qr.png
+qr.jpg
+guard.json
