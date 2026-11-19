@@ -12,7 +12,7 @@ import html as _html
 import json
 import re
 from dataclasses import dataclass, field
-from urllib.parse import urljoin
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 _FORM_RE = re.compile(r"<form\b([^>]*)>(.*?)</form>", re.S | re.I)
 _INPUT_RE = re.compile(r"<input\b([^>]*)>", re.S | re.I)
@@ -125,11 +125,29 @@ def error_text(html: str) -> str:
         r"id=[\"']showErrorTip[\"'][^>]*>\s*(?:<span[^>]*>)?([^<]+)<",
         r"id=[\"']formErrorTip[\"'][^>]*>.*?<span[^>]*>([^<]+)</span>",
         r"class=[\"'][^\"']*auth_error[^\"']*[\"'][^>]*>([^<]+)<",
+        r"class=[\"'][^\"']*no-access-or-registered-tip[^\"']*[\"'][^>]*>([^<]+)<",
     ):
         m = re.search(pat, html, re.S)
         if m and m.group(1).strip():
             return _html.unescape(m.group(1).strip())
     return ""
+
+
+def _normalize_service(raw: object) -> str:
+    """Normalize a CAS service URL extracted from HTML/JS, rejecting corrupt escapes."""
+    if raw is None:
+        return ""
+    s = _html.unescape(str(raw).strip())
+    if not s:
+        return ""
+    if re.match(r"^https?%3A%2F%2F", s, re.I):
+        s = unquote(s)
+    if "\\" in s:
+        return ""
+    u = urlparse(s)
+    if u.scheme not in ("http", "https") or not u.hostname:
+        return ""
+    return s
 
 
 # ---------------------------------------------------------------- second factor page
@@ -151,7 +169,11 @@ class ReauthPage:
 
     @property
     def service(self) -> str:
-        return str(self.params.get("service") or "")
+        from_params = _normalize_service(self.params.get("service"))
+        if from_params:
+            return from_params
+        q_service = parse_qs(urlparse(self.url).query).get("service", [""])[0]
+        return _normalize_service(q_service)
 
     @property
     def user_id(self) -> str:
@@ -163,42 +185,232 @@ class ReauthPage:
 
     @property
     def is_multifactor(self) -> str:
-        return str(self.params.get("isMultifactor") or "true")
+        val = self.params.get("isMultifactor")
+        if val is None or val == "":
+            return "true"
+        if isinstance(val, bool):
+            return "true" if val else "false"
+        return str(val)
 
     @property
     def asks_trust(self) -> bool:
         """The page shows the 信任此设备 dialog (``isSleepAccount === '0'``)."""
-        return str(self.params.get("isSleepAccount", "0")) == "0"
+        val = self.params.get("isSleepAccount")
+        if val is None or val == "":
+            return True
+        return str(val) == "0"
+
+
+def _scan_js_string_end(src: str, start: int) -> int:
+    quote = src[start]
+    i = start + 1
+    n = len(src)
+    while i < n:
+        ch = src[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == quote:
+            return i + 1
+        i += 1
+    return n
+
+
+def _skip_js_space_and_comments(src: str, i: int) -> int:
+    n = len(src)
+    while i < n:
+        if src[i].isspace() or src[i] == "\ufeff":
+            i += 1
+            continue
+        if src[i] == "/" and i + 1 < n:
+            if src[i + 1] == "/":
+                nl = src.find("\n", i + 2)
+                i = n if nl < 0 else nl + 1
+                continue
+            if src[i + 1] == "*":
+                end = src.find("*/", i + 2)
+                i = n if end < 0 else end + 2
+                continue
+        break
+    return i
+
+
+def _scan_js_balanced_end(src: str, start: int, open_ch: str, close_ch: str) -> int:
+    depth, i, n = 0, start, len(src)
+    while i < n:
+        ch = src[i]
+        if ch in "\"'":
+            i = _scan_js_string_end(src, i)
+            continue
+        if ch == "/" and i + 1 < n:
+            if src[i + 1] == "/":
+                nl = src.find("\n", i + 2)
+                i = n if nl < 0 else nl + 1
+                continue
+            if src[i + 1] == "*":
+                end = src.find("*/", i + 2)
+                i = n if end < 0 else end + 2
+                continue
+        if ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return n
+
+
+_JS_SIMPLE_ESCAPES = {"/": "/", "\\": "\\", '"': '"', "'": "'", "n": "\n", "r": "\r", "t": "\t", "b": "\b", "f": "\f", "v": "\v", "0": "\x00"}
+
+
+def _unescape_js_string(raw: str) -> str:
+    if "\\" not in raw:
+        return raw
+    out: list[str] = []
+    i, n = 0, len(raw)
+    while i < n:
+        ch = raw[i]
+        if ch != "\\" or i + 1 >= n:
+            out.append(ch)
+            i += 1
+            continue
+        i += 1
+        nxt = raw[i]
+        if nxt in _JS_SIMPLE_ESCAPES:
+            out.append(_JS_SIMPLE_ESCAPES[nxt])
+            i += 1
+        elif nxt == "\r":
+            i += 2 if i + 1 < n and raw[i + 1] == "\n" else 1
+        elif nxt == "\n":
+            i += 1
+        elif nxt == "u":
+            if i + 1 < n and raw[i + 1] == "{":
+                close = raw.find("}", i + 2)
+                if close > i + 2:
+                    try:
+                        out.append(chr(int(raw[i + 2 : close], 16)))
+                        i = close + 1
+                        continue
+                    except ValueError:
+                        pass
+            elif i + 4 < n:
+                try:
+                    code = int(raw[i + 1 : i + 5], 16)
+                    # Combine UTF-16 surrogate pair if followed by a low surrogate.
+                    if 0xD800 <= code <= 0xDBFF and i + 10 < n and raw[i + 5 : i + 7] == "\\u":
+                        low = int(raw[i + 7 : i + 11], 16)
+                        if 0xDC00 <= low <= 0xDFFF:
+                            out.append(chr(0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)))
+                            i += 11
+                            continue
+                    out.append(chr(code))
+                    i += 5
+                    continue
+                except ValueError:
+                    pass
+            out.append("u")
+            i += 1
+        elif nxt == "x" and i + 2 < n:
+            try:
+                out.append(chr(int(raw[i + 1 : i + 3], 16)))
+                i += 3
+                continue
+            except ValueError:
+                out.append("x")
+                i += 1
+        else:
+            out.append(nxt)
+            i += 1
+    return "".join(out)
+
+
+def _parse_js_object_literal(block: str) -> dict:
+    """Parse top-level key/value pairs of a JS object literal with full JS string unescaping."""
+    out: dict = {}
+    n = len(block)
+    i = _skip_js_space_and_comments(block, 0)
+    if i >= n or block[i] != "{":
+        return out
+    i += 1
+    while i < n:
+        i = _skip_js_space_and_comments(block, i)
+        if i >= n or block[i] == "}":
+            break
+        if block[i] == ",":
+            i += 1
+            continue
+        if block[i] in "\"'":
+            quote = block[i]
+            end = _scan_js_string_end(block, i)
+            if end <= i + 1 or block[end - 1] != quote:
+                break
+            key = _unescape_js_string(block[i + 1 : end - 1])
+            i = end
+        else:
+            start = i
+            while i < n and (block[i].isalnum() or block[i] in "_$"):
+                i += 1
+            if i == start:
+                i += 1
+                continue
+            key = block[start:i]
+        i = _skip_js_space_and_comments(block, i)
+        if i >= n or block[i] != ":":
+            while i < n and block[i] not in ",}":
+                i += 1
+            continue
+        i = _skip_js_space_and_comments(block, i + 1)
+        if i >= n:
+            break
+        ch = block[i]
+        if ch in "\"'":
+            end = _scan_js_string_end(block, i)
+            if end > i + 1 and block[end - 1] == ch:
+                out[key] = _unescape_js_string(block[i + 1 : end - 1])
+            i = end
+        elif ch == "{":
+            i = _scan_js_balanced_end(block, i, "{", "}")
+        elif ch == "[":
+            i = _scan_js_balanced_end(block, i, "[", "]")
+        else:
+            start = i
+            while i < n and block[i] not in ",}":
+                if block[i] in "\"'":
+                    i = _scan_js_string_end(block, i)
+                    continue
+                if block[i] == "/" and i + 1 < n and block[i + 1] in "/*":
+                    break
+                i += 1
+            tok = block[start:i].strip()
+            if tok == "true":
+                out[key] = True
+            elif tok == "false":
+                out[key] = False
+            elif tok in ("null", "undefined"):
+                out[key] = None
+            else:
+                try:
+                    out[key] = int(tok) if re.fullmatch(r"-?\d+", tok) else float(tok)
+                except ValueError:
+                    pass
+    return out
 
 
 def _js_object(src: str, name: str) -> dict:
-    m = re.search(rf"\b{name}\s*=\s*\{{", src)
+    m = re.search(rf"\b{re.escape(name)}\s*=\s*\{{", src)
     if not m:
         return {}
-    i, depth, in_str, esc, quote = m.end() - 1, 0, False, False, ""
-    for j in range(i, len(src)):
-        ch = src[j]
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == quote:
-                in_str = False
-        elif ch in "\"'":
-            in_str, quote = True, ch
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                text = src[i : j + 1]
-                try:
-                    return json.loads(text)
-                except ValueError:
-                    # tolerate JS-only syntax: fall back to "key": "value" pairs
-                    return {k: v for k, v in re.findall(r"[\"'](\w+)[\"']\s*:\s*[\"']([^\"']*)[\"']", text)}
-    return {}
+    start = m.end() - 1
+    end = _scan_js_balanced_end(src, start, "{", "}")
+    if end <= start or src[end - 1] != "}":
+        return {}
+    text = src[start:end]
+    try:
+        v = json.loads(text)
+        return v if isinstance(v, dict) else {}
+    except ValueError:
+        return _parse_js_object_literal(text)
 
 
 def parse_reauth_page(html: str, url: str) -> ReauthPage:

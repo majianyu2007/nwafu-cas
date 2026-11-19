@@ -21,7 +21,7 @@ SERVICE = "https://ehall.nwafu.edu.cn/login"
 SALT = "At1wiiLSvmQU7Nkf"
 REAUTH_SALT = "Bq2xjjMTwnRV8Olg"
 V = "20260922.133736"
-TOTP_SECRET = "JBSWY3DPEHPK3PXP"
+TOTP_SECRET = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
 PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 16
 
 LOGIN_HTML = f"""<html><head>
@@ -52,14 +52,26 @@ var is_userNameLogin = "true";</script></head><body>
 ERROR_HTML = LOGIN_HTML.replace("<body>", '<body><span id="showErrorTip"><span>您提供的用户名或者密码有误</span></span>')
 
 
+UNREGISTERED_HTML = (
+    '<html><head><title>应用未注册</title></head><body>'
+    '<div class="no-access-or-registered-tip">应用未注册</div></body></html>'
+)
+
+
+def _bad_service(service: str) -> bool:
+    return bool(service) and ("\\" in service or service.lower().startswith(("http%3a", "https%3a")))
+
+
 def reauth_html(offered=(("8", "微信扫码"), ("3", "短信验证码")), more=(("10", "安全令牌OTP"), ("4", "企业微信验证码"), ("14", "钉钉/企微/WeLink扫码"), ("6", "实人认证"), ("2", "认证密码"))):
     tabs = "".join(f'<div class="reauth-tab-item" id="tab_{t}" onclick="handlePcTabClick(this)" data-type="{t}" data-name="{n}"><span>{n}</span></div>' for t, n in offered)
     items = "".join(f'<a class="reauth-tab-more-item" href="javascript:;" id="{t}" title="{n}" data-name="{n}">{n}</a>' for t, n in more)
     params = {"isSleepAccount": "0", "reAuthType": offered[0][0], "isMultifactor": "true", "ipAnomaly": "0",
               "service": SERVICE, "reAuthUserId": "2025000001", "pwdEncryptSalt": REAUTH_SALT, "noneAuthType": None}
+    # Match live Thymeleaf th:inline="javascript" forward-slash escaping.
+    serialized = json.dumps(params).replace("/", r"\/")
     return f"""<html><head><script src="/authserver/nwafuTheme/static/custom/js/reAuth.js?v={V}"></script>
 <script>var contextPath = "\\/authserver";
-	var reAuthParams = {json.dumps(params)};</script></head><body>
+	var reAuthParams = {serialized};</script></head><body>
 <div class="reauth-tab-list">{tabs}<div class="reauth-tab-more-wrapper">{items}</div></div>
 <input type="hidden" name="pluginId" id="pluginId" value="REAL_PERSON_PLUGIN_ALI_PAY"/></body></html>"""
 
@@ -117,6 +129,8 @@ class FakeAuthServer:
         if path.endswith("/reAuth.js"):
             return httpx.Response(200, text=REAUTH_JS)
         if path == "/authserver/login":
+            if _bad_service(q.get("service", "")):
+                return httpx.Response(200, text=UNREGISTERED_HTML)
             if req.method == "GET":
                 if self.logged_in and not self.mfa_pending:
                     return httpx.Response(302, headers={"Location": f"{q['service']}?ticket=ST-1"} if "service" in q else {"Location": "/authserver/index.do"})
@@ -151,6 +165,8 @@ class FakeAuthServer:
             return httpx.Response(200, json={"res": "success", "returnMessage": "验证码已发送至", "mobile": "138****0000", "codeTime": 120})
         if path == "/authserver/reAuthCheck/reAuthSubmit.do":
             self.submits.append(form)
+            if _bad_service(form.get("service", "")):
+                return httpx.Response(200, json={"code": "reAuth_failed", "msg": "应用未注册"})
             t = form["reAuthType"]
             ok = {
                 "3": form.get("dynamicCode") == "123456",

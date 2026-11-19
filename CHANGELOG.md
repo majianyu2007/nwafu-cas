@@ -2,6 +2,14 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.0.2] — 2026-11-20
+
+### 修正
+- 修复 `reAuthParams` 包含非严格 JSON 语法（如 Thymeleaf 转义的 `\'`、无引号键、注释、尾随逗号等）触发回退解析时，未反转义 `\/`、`\u0026` 等 JS 转义序列，导致二次认证提交 `service` 触发「应用未注册」的问题。
+- 为 `ReauthPage.service` 增加 HTML 实体与重复 URL 编码纠偏，并在缺失或异常时依次回退至 `reAuthLoginView.do` 查询参数及原登录请求的 `service`。
+- 修正 `ReauthPage.is_multifactor` 在收到布尔值时的序列化（`true`/`false`）；补充 `no-access-or-registered-tip`（「应用未注册」）页面错误提取。
+- 加固 `MfaChallenge.submit`：明确拦截 302 会话过期、非 JSON 响应及其他非 `reAuth_success` 错误码，不再静默忽略。
+
 ## [1.0.1] — 2026-10-25
 
 ### 修正

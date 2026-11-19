@@ -181,3 +181,101 @@ def test_state_roundtrip(cas, site, tmp_path):
 
     if os.name != "nt":
         assert stat.S_IMODE(p.stat().st_mode) == 0o600
+
+
+def test_reauth_params_with_thymeleaf_js_escapes_and_non_json_syntax(cas, site):
+    # Thymeleaf th:inline="javascript" escapes `/` as `\/`, `&` as `\u0026`, and `'` as `\'`.
+    # The `\'` inside reAuthDec3 forces _js_object out of json.loads into the JS-literal parser.
+    site.reauth = """<html><head><script>
+        var other = {"service": "https:\\/\\/wrong.invalid\\/bad"};
+        var reAuthParams = {
+            // comment with } brace
+            "reAuthDec3": "Don\\'t share <span class=\\'tip\\'>验证码</span>",
+            isSleepAccount: 0,
+            reAuthType: '3',
+            isMultifactor: true,
+            service: "https:\\/\\/ehall.nwafu.edu.cn\\/login",
+            reAuthUserId: "2025000001",
+            pwdEncryptSalt: "Bq2xjjMTwnRV8Olg",
+        };
+    </script></head><body>
+        <div class="reauth-tab-item" id="tab_3" data-type="3" data-name="短信验证码">短信验证码</div>
+    </body></html>"""
+    m = cas.login("2025000001", "correct horse").mfa
+    assert m.service == SERVICE
+    assert m.page.is_multifactor == "true"
+    assert m.page.asks_trust is True
+    assert "138****0000" in m.send_code()
+    res = m.submit(code="123456")
+    assert res.done and res.response.text == "portal"
+    assert site.submits[-1]["service"] == SERVICE
+
+
+def test_reauth_service_normalizes_encoded_and_falls_back_to_url():
+    from nwafu_cas.page import parse_reauth_page
+
+    # 1. Whole-URL-encoded service in reAuthParams
+    html_encoded = """<script>
+        var reAuthParams = {
+            "service": "https%3A%2F%2Fehall.nwafu.edu.cn%2Fjwapp%2Fsys%2Fwdkbby%2F*default%2Findex.do",
+            "reAuthType": "3", "reAuthUserId": "2025000001"
+        };
+    </script>"""
+    p1 = parse_reauth_page(html_encoded, "https://authserver.nwafu.edu.cn/authserver/reAuthCheck/reAuthLoginView.do")
+    assert p1.service == "https://ehall.nwafu.edu.cn/jwapp/sys/wdkbby/*default/index.do"
+
+    # 2. Missing service in reAuthParams falls back to query string of reAuthLoginView.do
+    html_missing = '<script>var reAuthParams = {"reAuthType": "3", "reAuthUserId": "2025000001"};</script>'
+    p2 = parse_reauth_page(
+        html_missing,
+        "https://authserver.nwafu.edu.cn/authserver/reAuthCheck/reAuthLoginView.do?isMultifactor=true&service=https%3A%2F%2Fehall.nwafu.edu.cn%2Flogin",
+    )
+    assert p2.service == SERVICE
+
+    # 3. Query params escaped with \u0026 inside non-JSON reAuthParams
+    html_amp = """<script>
+        var reAuthParams = {
+            note: 'a\\'b',
+            service: "https:\\/\\/ehall.nwafu.edu.cn\\/jwapp\\/sys\\/wdkbby\\/*default\\/index.do?a=1\\u0026b=2",
+        };
+    </script>"""
+    p3 = parse_reauth_page(html_amp, "https://authserver.nwafu.edu.cn/authserver/reAuthCheck/reAuthLoginView.do")
+    assert p3.service == "https://ehall.nwafu.edu.cn/jwapp/sys/wdkbby/*default/index.do?a=1&b=2"
+
+
+def test_unregistered_app_error_is_extracted_and_surfaced():
+    from conftest import UNREGISTERED_HTML
+
+    from nwafu_cas import CasError
+    from nwafu_cas.client import classify_failure
+    from nwafu_cas.page import error_text
+
+    assert error_text(UNREGISTERED_HTML) == "应用未注册"
+    err = classify_failure(UNREGISTERED_HTML)
+    assert isinstance(err, CasError) and "应用未注册" in str(err)
+
+
+def test_mfa_submit_rejects_expired_redirect_and_unregistered_msg(cas, site):
+    import httpx
+
+    m = cas.login("2025000001", "correct horse").mfa
+    m.select("3")
+    orig = site.handler
+
+    def redirect_handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/authserver/reAuthCheck/reAuthSubmit.do":
+            return httpx.Response(302, headers={"Location": "/authserver/login"})
+        return orig(req)
+
+    cas.http._transport = httpx.MockTransport(redirect_handler)
+    with pytest.raises(MfaError, match="已过期"):
+        m.submit(code="123456")
+
+    def unreg_handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/authserver/reAuthCheck/reAuthSubmit.do":
+            return httpx.Response(200, json={"code": "reAuth_failed", "msg": "应用未注册"})
+        return orig(req)
+
+    cas.http._transport = httpx.MockTransport(unreg_handler)
+    with pytest.raises(MfaError, match="应用未注册"):
+        m.submit(code="123456")

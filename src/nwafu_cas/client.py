@@ -25,7 +25,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import parse_qs, quote, urljoin, urlparse
 
 import httpx
 
@@ -236,13 +236,17 @@ class CasClient:
     def login_page(self, service: str | None = DEFAULT_SERVICE, login_url: str | None = None) -> _page.LoginPage | LoginResult:
         """The parsed login page, or a finished result if already logged in."""
         url = login_url or self.login_url(service)
+        fallback_service = _service_from_url(url) or service
         r = self._get(url)
         if _is_redirect(r):
-            return self._after(r)
+            return self._after(r, fallback_service=fallback_service)
         if r.status_code >= 500:
             raise Maintenance("统一身份认证暂时不可用", f"HTTP {r.status_code}")
         p = _page.parse_login_page(r.text, str(r.url))
         if not p.forms:
+            tip = _page.error_text(r.text)
+            if tip:
+                raise classify_failure(r.text)
             raise SiteChanged("统一身份认证登录页无法识别", "运行 nwafu-cas doctor 检查页面是否改版")
         self._adapt(p.theme_dir, p.theme_version)
         return p
@@ -315,9 +319,9 @@ class CasClient:
         r = self._post(url, data=data)
         if not _is_redirect(r):
             raise classify_failure(r.text)
-        return self._after(r)
+        return self._after(r, fallback_service=_service_from_url(url))
 
-    def _after(self, r: httpx.Response) -> LoginResult:
+    def _after(self, r: httpx.Response, *, fallback_service: str | None = None) -> LoginResult:
         last = self.follow(urljoin(str(r.url), r.headers["location"])) if _is_redirect(r) else r
         final = str(last.url)
         on_login = urlparse(final).path.rstrip("/").endswith("/authserver/login")
@@ -328,7 +332,7 @@ class CasClient:
             if not rp.params and not rp.offered:
                 raise SiteChanged("二次认证页面无法识别", "运行 nwafu-cas doctor 检查页面是否改版")
             self._adapt(rp.theme_dir, rp.theme_version)
-            return LoginResult(last, MfaChallenge(self, rp))
+            return LoginResult(last, MfaChallenge(self, rp, fallback_service=fallback_service))
         if on_login:
             raise classify_failure(last.text)
         return LoginResult(last)
@@ -350,6 +354,8 @@ def classify_failure(html: str) -> CasError:
         return InvalidCredentials(tip, "检查学号/工号和统一身份认证密码")
     if "维护" in tip:
         return Maintenance(tip)
+    if "未注册" in tip or "无权访问" in tip:
+        return CasError(tip, "检查目标应用 service 地址是否已注册")
     if not tip and "<form" not in html:
         return SiteChanged("登录后的页面无法识别", "运行 nwafu-cas doctor 检查页面是否改版")
     return CasError(tip or "统一身份认证登录失败")
@@ -358,11 +364,11 @@ def classify_failure(html: str) -> CasError:
 class MfaChallenge:
     """The second-factor step (``reAuthLoginView.do``) of one login."""
 
-    def __init__(self, cas: CasClient, page: _page.ReauthPage):
+    def __init__(self, cas: CasClient, page: _page.ReauthPage, *, fallback_service: str | None = None):
         self.cas = cas
         self.page = page
         self.current = page.current
-        self.service = page.service
+        self.service = page.service or _page._normalize_service(fallback_service)
         offered = page.offered or ([(page.current, "")] if page.current else [])
         self.methods: list[_mfa.MfaMethod] = [_mfa.method(t, n) for t, n in offered]
 
@@ -425,10 +431,22 @@ class MfaChallenge:
         if self.page.asks_trust:
             params["skipTmpReAuth"] = "true" if trust_device else "false"
         self.cas.ensure_fingerprint()
-        j = _json(self.cas._post(f"{BASE}/reAuthCheck/reAuthSubmit.do", data=params))
-        if j.get("code") in ("reAuth_failed", "reAuth_unauthorized"):
-            raise MfaError(j.get("msg") or "二次认证失败", "检查后重试")
-        return self.cas._after(self.cas._get(self.cas.login_url(self.service or None)))
+        r = self.cas._post(f"{BASE}/reAuthCheck/reAuthSubmit.do", data=params)
+        if _is_redirect(r):
+            raise MfaError("二次认证会话已过期", "请重新登录后重试")
+        j = _json(r)
+        if not j:
+            tip = _page.error_text(r.text)
+            raise MfaError(tip or "二次认证提交响应异常", "请重新登录后重试")
+        code_val = str(j.get("code") or "")
+        if code_val in ("reAuth_failed", "reAuth_unauthorized") or (code_val and code_val != "reAuth_success"):
+            msg = str(j.get("msg") or "二次认证失败")
+            hint = "认证服务未认可目标应用地址，请检查 service 参数" if ("未注册" in msg or "无权访问" in msg) else "检查后重试"
+            raise MfaError(msg, hint)
+        return self.cas._after(
+            self.cas._get(self.cas.login_url(self.service or None)),
+            fallback_service=self.service or None,
+        )
 
     def submit_totp(self, secret: str, trust_device: bool = True) -> LoginResult:
         import pyotp
@@ -452,6 +470,11 @@ class MfaChallenge:
             reauth = "2" if self.page.is_multifactor == "true" else "1"
             return _qr.wechat_qr(self.cas, self.service, reauth, trust_device if self.page.asks_trust else None)
         raise MfaError(f"“{m.name}”不是扫码方式")
+
+
+def _service_from_url(url: str) -> str | None:
+    s = _page._normalize_service(parse_qs(urlparse(url).query).get("service", [""])[0])
+    return s or None
 
 
 def _json(r: httpx.Response) -> dict:
