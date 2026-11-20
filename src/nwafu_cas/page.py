@@ -14,6 +14,8 @@ import re
 from dataclasses import dataclass, field
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
+from .constants import CAMPUS_HOST_SUFFIXES
+
 _FORM_RE = re.compile(r"<form\b([^>]*)>(.*?)</form>", re.S | re.I)
 _INPUT_RE = re.compile(r"<input\b([^>]*)>", re.S | re.I)
 _ATTR_RE = re.compile(r"""([\w:-]+)\s*=\s*("([^"]*)"|'([^']*)')""", re.S)
@@ -123,13 +125,14 @@ def parse_login_page(html: str, url: str) -> LoginPage:
 def error_text(html: str) -> str:
     for pat in (
         r"id=[\"']showErrorTip[\"'][^>]*>\s*(?:<span[^>]*>)?([^<]+)<",
-        r"id=[\"']formErrorTip[\"'][^>]*>.*?<span[^>]*>([^<]+)</span>",
+        r"id=[\"']formErrorTip[\"'][^>]*>(?:(?!</div>).)*?<span[^>]*>([^<]+)</span>",
         r"class=[\"'][^\"']*auth_error[^\"']*[\"'][^>]*>([^<]+)<",
         r"class=[\"'][^\"']*no-access-or-registered-tip[^\"']*[\"'][^>]*>([^<]+)<",
     ):
-        m = re.search(pat, html, re.S)
-        if m and m.group(1).strip():
-            return _html.unescape(m.group(1).strip())
+        for m in re.finditer(pat, html, re.S):
+            text = _html.unescape(m.group(1)).strip()
+            if text:
+                return text
     return ""
 
 
@@ -146,6 +149,8 @@ def _normalize_service(raw: object) -> str:
         return ""
     u = urlparse(s)
     if u.scheme not in ("http", "https") or not u.hostname:
+        return ""
+    if not u.hostname.lower().endswith(CAMPUS_HOST_SUFFIXES):
         return ""
     return s
 

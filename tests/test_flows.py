@@ -279,3 +279,117 @@ def test_mfa_submit_rejects_expired_redirect_and_unregistered_msg(cas, site):
     cas.http._transport = httpx.MockTransport(unreg_handler)
     with pytest.raises(MfaError, match="应用未注册"):
         m.submit(code="123456")
+
+    def empty_code_handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/authserver/reAuthCheck/reAuthSubmit.do":
+            return httpx.Response(200, json={"msg": "验证状态异常"})
+        return orig(req)
+
+    cas.http._transport = httpx.MockTransport(empty_code_handler)
+    with pytest.raises(MfaError, match="验证状态异常"):
+        m.submit(code="123456")
+
+
+def test_error_text_does_not_escape_empty_form_error_tip_div():
+    from nwafu_cas.page import error_text
+
+    clean_login = """<html><body>
+        <div id="formErrorTip" class="form-errorTip">
+            <span id="showErrorTip" class="form-error"></span>
+            <span id="showWarnTip" class="form-warn"></span>
+        </div>
+        <div class="remember-me"><span>7天免登录</span></div>
+    </body></html>"""
+    assert error_text(clean_login) == ""
+
+    second_tab_error = clean_login + '<div id="formErrorTip"><span class="form-error">动态码已失效</span></div>'
+    assert error_text(second_tab_error) == "动态码已失效"
+
+
+def test_normalize_service_rejects_non_campus_host_and_falls_back():
+    from nwafu_cas.page import parse_reauth_page
+
+    html = '<script>var reAuthParams = {"service": "https:\\/\\/evil.example.com\\/steal", "reAuthType": "3"};</script>'
+    p = parse_reauth_page(
+        html,
+        "https://authserver.nwafu.edu.cn/authserver/reAuthCheck/reAuthLoginView.do?service=https%3A%2F%2Fehall.nwafu.edu.cn%2Flogin",
+    )
+    assert p.service == SERVICE
+
+
+def test_cookies_preserve_host_only_scope_and_ignore_expired_and_cross_host_302(tmp_path):
+    import time
+    from http.cookiejar import Cookie
+
+    import httpx
+
+    from nwafu_cas import cookies as C
+
+    seen_headers: dict[str, str] = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen_headers[f"{req.url.host}{req.url.path}"] = req.headers.get("cookie", "")
+        if req.url.host == "authserver.nwafu.edu.cn" and req.url.path == "/authserver/set":
+            return httpx.Response(200, headers={"Set-Cookie": "CASTGC=TGT-LIVE; Path=/authserver/; Secure; HttpOnly"})
+        if req.url.host == "booking-lib.nwafu.edu.cn" and req.url.path == "/api/cas/cas":
+            return httpx.Response(
+                302,
+                headers={
+                    "Set-Cookie": "PHPSESSID=php-123; path=/",
+                    "Location": "https://authserver.nwafu.edu.cn/authserver/login?service=https%3A%2F%2Fbooking-lib.nwafu.edu.cn%2Fapi%2Fcas%2Fcas",
+                },
+            )
+        return httpx.Response(200, text="ok")
+
+    c1 = CasClient(http=httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False))
+    c1._get("https://authserver.nwafu.edu.cn/authserver/set")
+    p = tmp_path / "state.json"
+    c1.save(p)
+    c1.close()
+
+    # Reload into a fresh client (simulating cold start)
+    loaded = CasClient.load(p)
+    loaded.http._transport = httpx.MockTransport(handler)
+    try:
+        # Host-only CASTGC keeps domain_specified=False and does not leak to sibling campus hosts
+        castgc = next(c for c in loaded.http.cookies.jar if c.name == "CASTGC")
+        assert castgc.domain_specified is False and castgc.domain_initial_dot is False
+        loaded._get("https://ehall.nwafu.edu.cn/authserver/login")
+        assert "CASTGC" not in seen_headers["ehall.nwafu.edu.cn/authserver/login"]
+
+        # Cross-host 302 from booking-lib with Set-Cookie: PHPSESSID must NOT pollute or wipe authserver cookies
+        loaded.follow("https://booking-lib.nwafu.edu.cn/api/cas/cas")
+        assert "CASTGC=TGT-LIVE" in seen_headers["authserver.nwafu.edu.cn/authserver/login"]
+        assert "PHPSESSID" not in seen_headers["authserver.nwafu.edu.cn/authserver/login"]
+        assert loaded.has_tgc()
+
+        # Expired CASTGC must not report has_tgc() == True
+        loaded.http.cookies.jar.set_cookie(Cookie(
+            version=0, name="CASTGC", value="TGT-OLD", port=None, port_specified=False,
+            domain="authserver.nwafu.edu.cn", domain_specified=False, domain_initial_dot=False,
+            path="/authserver/", path_specified=True, secure=True,
+            expires=int(time.time()) - 60, discard=False, comment=None, comment_url=None, rest={},
+        ))
+        assert not C.has(loaded.http.cookies, "CASTGC", "authserver.nwafu.edu.cn")
+        assert not loaded.has_tgc()
+    finally:
+        loaded.close()
+
+
+def test_get_mfa_login_url_can_be_passed_directly_to_login(cas, site):
+    # First login leaves MFA pending
+    res1 = cas.login("2025000001", "correct horse", service=SERVICE)
+    assert not res1.done
+
+    # Subsequent cas.get() raises LoginRequired(kind="mfa", login_url=reAuthLoginView...)
+    with pytest.raises(LoginRequired) as exc:
+        cas.get(cas.login_url(SERVICE))
+    assert exc.value.kind == "mfa"
+    assert "/reAuthCheck/reAuthLoginView.do" in (exc.value.login_url or "")
+
+    # Passing e.login_url back to cas.login() returns the MfaChallenge cleanly instead of SiteChanged
+    res2 = cas.login("2025000001", "correct horse", login_url=exc.value.login_url)
+    assert not res2.done and res2.mfa is not None
+    res2.mfa.select("3")
+    done = res2.mfa.submit(code="123456")
+    assert done.done and done.response.text == "portal"

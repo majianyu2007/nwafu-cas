@@ -2,6 +2,14 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.0.3] — 2026-11-20
+
+### 修正
+- 修复 `page.error_text` 中 `formErrorTip` 正则跨出 `</div>` 导致在正常登录页误匹配 `<span>7天免登录</span>` 的问题，并改为遍历全部匹配项以跳过前置空提示节点。
+- 修复 `cookies.to_json` / `from_json` 重载会话时将 host-only Cookie（如 `CASTGC`）的 `domain_specified` 误置为 `True` 的问题，并过滤已过期 Cookie；同时 `cookies.has` 忽略已过期或空值 Cookie 并按 `authserver.nwafu.edu.cn` 域名校验。
+- 修复 `CasClient.get()` 因触发二次认证抛出 `LoginRequired(kind="mfa", login_url=...)` 后，将该 `login_url` 传给 `CasClient.login` / `login_page` / `interactive.login` 时直接报 `SiteChanged` 的问题，现在可直接衔接返回 `MfaChallenge`。
+- 加强 `MfaChallenge.submit` 对缺失 `code` 响应的拦截、`page._normalize_service` 对非校内域名的过滤，以及微信扫码回调的 `fallback_service` 传递。
+
 ## [1.0.2] — 2026-11-20
 
 ### 修正

@@ -169,11 +169,11 @@ class CasClient:
         raise CasError("重定向次数过多", url[:80], kind="redirect")
 
     def has_tgc(self) -> bool:
-        return _cookies.has(self.http.cookies, TGC_COOKIE)
+        return _cookies.has(self.http.cookies, TGC_COOKIE, urlparse(BASE).hostname)
 
     def trusted(self) -> bool:
         """This installation is registered as a device (信任此设备 may apply)."""
-        return _cookies.has(self.http.cookies, TRUSTED_DEVICE_COOKIE)
+        return _cookies.has(self.http.cookies, TRUSTED_DEVICE_COOKIE, urlparse(BASE).hostname)
 
     def is_logged_in(self, service: str = DEFAULT_SERVICE) -> bool:
         """True when CASTGC is valid: the login page redirects straight on."""
@@ -242,6 +242,8 @@ class CasClient:
             return self._after(r, fallback_service=fallback_service)
         if r.status_code >= 500:
             raise Maintenance("统一身份认证暂时不可用", f"HTTP {r.status_code}")
+        if _REAUTH in str(r.url):
+            return self._after(r, fallback_service=fallback_service)
         p = _page.parse_login_page(r.text, str(r.url))
         if not p.forms:
             tip = _page.error_text(r.text)
@@ -439,8 +441,8 @@ class MfaChallenge:
             tip = _page.error_text(r.text)
             raise MfaError(tip or "二次认证提交响应异常", "请重新登录后重试")
         code_val = str(j.get("code") or "")
-        if code_val in ("reAuth_failed", "reAuth_unauthorized") or (code_val and code_val != "reAuth_success"):
-            msg = str(j.get("msg") or "二次认证失败")
+        if code_val != "reAuth_success":
+            msg = str(j.get("msg") or j.get("message") or "二次认证失败")
             hint = "认证服务未认可目标应用地址，请检查 service 参数" if ("未注册" in msg or "无权访问" in msg) else "检查后重试"
             raise MfaError(msg, hint)
         return self.cas._after(

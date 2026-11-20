@@ -181,7 +181,7 @@ def wechat_qr(cas: CasClient, service: str, reauth: str, trust: bool | None) -> 
 
     def finish() -> LoginResult:
         sep = "&" if "?" in redirect_uri else "?"
-        return cas._after(cas._get(f"{redirect_uri}{sep}code={box['code']}&state={state}"))
+        return cas._after(cas._get(f"{redirect_uri}{sep}code={box['code']}&state={state}"), fallback_service=service or None)
 
     return QrChallenge("wechat", img, "用微信扫码并在手机上确认", content=f"https://open.weixin.qq.com/connect/confirm?uuid={uuid}",
                        uuid=uuid, _poll=poll, _finish=finish)

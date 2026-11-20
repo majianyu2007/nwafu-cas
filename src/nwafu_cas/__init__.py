@@ -22,7 +22,7 @@ from .guard import GuardPolicy, LoginGuard
 from .mfa import MfaMethod
 from .qr import QrChallenge
 
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 
 __all__ = [
     "AUTH_SERVER", "DEFAULT_SERVICE", "VERIFIED_THEME",
